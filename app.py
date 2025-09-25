@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 from pandas_datareader import data as pdr
@@ -7,7 +8,6 @@ import numpy as np
 import time
 import zipfile
 from io import BytesIO
-import os
 
 # Override pandas_datareader with yfinance for compatibility
 yf.pdr_override()
@@ -282,7 +282,7 @@ def create_results_zip(results_df):
         csv_buffer.seek(0)
         zip_file.writestr("screener_results.csv", csv_buffer.read())
         
-        # Add individual CSV for each symbol if needed (optional)
+        # Add individual CSV for each symbol
         for symbol in results_df['Symbol'].unique():
             symbol_df = results_df[results_df['Symbol'] == symbol]
             csv_buffer = BytesIO()
@@ -348,7 +348,7 @@ if st.sidebar.button("SCAN"):
                 supply_count = len(df_results[df_results['Supply_Score'] > 0])
                 st.metric("Supply Zones", supply_count)
             
-            # Download ZIP button
+            # Download buttons
             zip_data = create_results_zip(df_results)
             st.download_button(
                 label="Download Results as ZIP",
@@ -356,11 +356,32 @@ if st.sidebar.button("SCAN"):
                 file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                 mime="application/zip"
             )
+            csv_buffer = BytesIO()
+            df_results.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            st.download_button(
+                label="Download Results as CSV",
+                data=csv_buffer,
+                file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
         else:
             st.info("No matching zones found. Try: DAILY/WEEKLY interval, 60-day range, fewer symbols, or upload a CSV with OHLC data.")
 
 # Instructions
 with st.expander("Deployment Instructions"):
     st.markdown("""
-    1. Create GitHub repo, add `app.py`.
-    2. Create `requirements.txt`:
+1. Create a GitHub repo and add `app.py`.
+2. Create `requirements.txt` with:
+   ```
+   streamlit
+   pandas
+   yfinance>=0.2.41
+   pandas_datareader>=0.10.0
+   numpy
+   ```
+3. Deploy on Streamlit Cloud via GitHub (streamlit.io/cloud).
+4. Test locally with `streamlit run app.py` to isolate issues.
+5. Use CSV upload if API fails (format: Date, Open, High, Low, Close).
+6. Check logs in 'Manage app' for errors.
+    """)
