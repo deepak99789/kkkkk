@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 from pandas_datareader import data as pdr
@@ -373,15 +372,3 @@ with st.expander("Deployment Instructions"):
     st.markdown("""
 1. Create a GitHub repo and add `app.py`.
 2. Create `requirements.txt` with:
-   ```
-   streamlit
-   pandas
-   yfinance>=0.2.41
-   pandas_datareader>=0.10.0
-   numpy
-   ```
-3. Deploy on Streamlit Cloud via GitHub (streamlit.io/cloud).
-4. Test locally with `streamlit run app.py` to isolate issues.
-5. Use CSV upload if API fails (format: Date, Open, High, Low, Close).
-6. Check logs in 'Manage app' for errors.
-    """)
