@@ -1,15 +1,11 @@
 import streamlit as st
 import pandas as pd
-from pandas_datareader import data as pdr
 import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
 import time
 import zipfile
 from io import BytesIO
-
-# Override pandas_datareader with yfinance for compatibility
-yf.pdr_override()
 
 # Page config
 st.set_page_config(page_title="Supply Demand Screener", layout="wide")
@@ -101,7 +97,9 @@ def fetch_data(symbols, start, end, interval):
         temp_end = end
         while attempt <= max_attempts:
             try:
-                df = pdr.get_data_yahoo(symbol, start=temp_start, end=temp_end, interval=interval)
+                # Use yfinance directly
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(start=temp_start, end=temp_end, interval=interval)
                 if not df.empty and all(col in df.columns for col in ['High', 'Low', 'Close', 'Open']):
                     df = df.dropna(subset=['High', 'Low', 'Close', 'Open'])
                     df[['High', 'Low', 'Close', 'Open']] = df[['High', 'Low', 'Close', 'Open']].astype(float)
@@ -209,3 +207,166 @@ def detect_pattern(df, min_body_rd, max_body_b, num_bases, required_zone_type, r
         elif leg_in == 'Rally' and leg_out == 'Drop':
             pattern = 'RBD'
             is_demand = False
+        elif leg_in == 'Drop' and leg_out == 'Drop':
+            pattern = 'DBD'
+            is_demand = False
+        elif leg_in == 'Drop' and leg_out == 'Rally':
+            pattern = 'DBR'
+            is_demand = True
+        
+        if not pattern:
+            return 'No Pattern', 0.0, 0.0, 0, 0.0, 0.0, 0.0, 'NONE'
+        
+        if required_zone_type != "ALL" and ((required_zone_type == "DEMAND" and not is_demand) or (required_zone_type == "SUPPLY" and is_demand)):
+            return 'No Pattern', 0.0, 0.0, 0, 0.0, 0.0, 0.0, 'NONE'
+        
+        try:
+            current_price = float(df.iloc[-1]['Close'])
+        except (ValueError, TypeError):
+            return 'No Pattern', 0.0, 0.0, 0, 0.0, 0.0, 0.0, 'NONE'
+        
+        entry_price = base_max_high if is_demand else base_min_low
+        sl_price = zone_low * (1 - sl_buffer_pct / 100) if is_demand else zone_high * (1 + sl_buffer_pct / 100)
+        risk = abs(entry_price - sl_price)
+        target_price = entry_price + (risk * rr_ratio) if is_demand else entry_price - (risk * rr_ratio)
+        
+        if is_demand:
+            if current_price >= base_max_high:
+                if current_price >= target_price:
+                    status = 'TARGET'
+                elif current_price <= sl_price:
+                    status = 'STOPLOSS'
+                else:
+                    status = 'FRESH'
+            else:
+                status = 'FRESH'
+        else:
+            if current_price <= base_min_low:
+                if current_price <= target_price:
+                    status = 'TARGET'
+                elif current_price >= sl_price:
+                    status = 'STOPLOSS'
+                else:
+                    status = 'FRESH'
+            else:
+                status = 'FRESH'
+        
+        if zone_status != "ALL" and zone_status != status:
+            return 'No Pattern', 0.0, 0.0, 0, 0.0, 0.0, 0.0, 'NONE'
+        
+        demand_score = 1.0 if is_demand else 0.0
+        supply_score = 1.0 - demand_score
+        return (
+            f"{pattern} ({'Demand' if is_demand else 'Supply'})",
+            demand_score,
+            supply_score,
+            1,
+            entry_price,
+            sl_price,
+            target_price,
+            status
+        )
+    
+    return 'No Pattern', 0.0, 0.0, 0, 0.0, 0.0, 0.0, 'NONE'
+
+# Function to create zip file with results
+def create_results_zip(results_df):
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # Add summary CSV
+        csv_buffer = BytesIO()
+        results_df.to_csv(csv_buffer, index=False)
+        csv_buffer.seek(0)
+        zip_file.writestr("screener_results.csv", csv_buffer.read())
+        
+        # Add individual CSV for each symbol
+        for symbol in results_df['Symbol'].unique():
+            symbol_df = results_df[results_df['Symbol'] == symbol]
+            csv_buffer = BytesIO()
+            symbol_df.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            zip_file.writestr(f"{symbol}_details.csv", csv_buffer.read())
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+# Scan Button
+if st.sidebar.button("SCAN"):
+    if not symbols and not uploaded_file:
+        st.warning("Please select script type, enter symbols, or upload a CSV.")
+    else:
+        with st.spinner(f"Processing data for {len(symbols)} symbols..."):
+            data = {}
+            if uploaded_file:
+                data = process_uploaded_csv(uploaded_file)
+            else:
+                data = fetch_data(symbols, start_date, end_date, yf_interval)
+        
+        results = []
+        for symbol, df in data.items():
+            if not df.empty:
+                st.info(f"Processing {symbol} with {len(df)} candles.")
+                pattern, demand_score, supply_score, match, entry_price, sl_price, target_price, status = detect_pattern(
+                    df, min_body_rally_drop, max_body_base, num_base_candles, zone_type, rr_ratio, sl_buffer_pct
+                )
+                if match > 0:
+                    results.append({
+                        'Symbol': symbol,
+                        'Pattern': pattern,
+                        'Zone_Type': 'Demand' if demand_score > 0 else 'Supply',
+                        'Zone_Status': status,
+                        'Current_Price': df.iloc[-1]['Close'],
+                        'Entry_Price': entry_price,
+                        'Stoploss_Price': sl_price,
+                        'Target_Price': target_price,
+                        'Demand_Score': demand_score,
+                        'Supply_Score': supply_score
+                    })
+                else:
+                    st.info(f"No matching pattern found for {symbol}.")
+            else:
+                st.warning(f"No data available for {symbol}.")
+        
+        if results:
+            df_results = pd.DataFrame(results)
+            st.subheader("Scan Results")
+            st.dataframe(
+                df_results[['Symbol', 'Pattern', 'Zone_Type', 'Zone_Status', 'Current_Price', 'Entry_Price', 'Stoploss_Price', 'Target_Price']],
+                use_container_width=True
+            )
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Matches", len(df_results))
+            with col2:
+                demand_count = len(df_results[df_results['Demand_Score'] > 0])
+                st.metric("Demand Zones", demand_count)
+            with col3:
+                supply_count = len(df_results[df_results['Supply_Score'] > 0])
+                st.metric("Supply Zones", supply_count)
+            
+            # Download buttons
+            zip_data = create_results_zip(df_results)
+            st.download_button(
+                label="Download Results as ZIP",
+                data=zip_data,
+                file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip"
+            )
+            csv_buffer = BytesIO()
+            df_results.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            st.download_button(
+                label="Download Results as CSV",
+                data=csv_buffer,
+                file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("No matching zones found. Try: DAILY/WEEKLY interval, 60-day range, fewer symbols, or upload a CSV with OHLC data.")
+
+# Instructions
+with st.expander("Deployment Instructions"):
+    st.markdown("""
+1. Create a GitHub repo and add `app.py`.
+2. Create `requirements.txt` with:
